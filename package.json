@@ -1,5 +1,6 @@
 {
   "name": "img-weddings-preedit",
+  "type": "module",
   "version": "1.0.0",
   "description": "Wedding footage pre-editing suite — cut, select, balance, export",
   "main": "dist-electron/main.js",
