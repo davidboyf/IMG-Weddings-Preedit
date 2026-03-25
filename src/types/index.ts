@@ -4,7 +4,20 @@
 
 export type ClipRating = 0 | 1 | 2 | 3 | 4 | 5
 export type ClipFlag = 'none' | 'pick' | 'reject' | 'review'
-export type ExportFormat = 'fcpxml' | 'xmeml' | 'edl' | 'csv'
+export type ColorLabel = 'none' | 'red' | 'orange' | 'yellow' | 'green' | 'teal' | 'blue' | 'purple'
+export type ExportFormat = 'fcpxml' | 'xmeml' | 'edl' | 'csv' | 'aaf' | 'davinci' | 'clip-export'
+export type ProxyStatus = 'none' | 'creating' | 'ready' | 'error'
+
+export const COLOR_LABEL_HEX: Record<ColorLabel, string> = {
+  none:   'transparent',
+  red:    '#f87171',
+  orange: '#fb923c',
+  yellow: '#fbbf24',
+  green:  '#34d399',
+  teal:   '#2dd4bf',
+  blue:   '#60a5fa',
+  purple: '#a78bfa',
+}
 
 export interface VideoInfo {
   duration: number
@@ -27,35 +40,51 @@ export interface Marker {
   color: string
 }
 
+export interface SubClip {
+  id: string
+  name: string
+  inPoint: number
+  outPoint: number
+  flag: ClipFlag
+  notes: string
+  addedAt: number
+}
+
 export interface MediaClip {
   id: string
   filePath: string
   fileName: string
   thumbnail: string | null
   info: VideoInfo | null
-  inPoint: number       // seconds — null means start
-  outPoint: number      // seconds — null means end
+  inPoint: number
+  outPoint: number
   inPointSet: boolean
   outPointSet: boolean
   rating: ClipRating
   flag: ClipFlag
+  colorLabel: ColorLabel
   notes: string
   markers: Marker[]
-  // Audio overrides
-  volume: number        // 0..2, 1 = 100%
-  audioBalance: number  // -1..1, 0 = center
+  subClips: SubClip[]
+  // Audio
+  volume: number
+  audioBalance: number
+  // Proxy
+  proxyPath: string | null
+  proxyStatus: ProxyStatus
+  useProxy: boolean
   // Metadata
-  importedAt: number    // Date.now()
+  importedAt: number
   waveformPeaks: number[] | null
-  group: string         // e.g. "Ceremony", "Reception"
-  reelName: string      // camera/reel label
+  group: string
+  reelName: string
 }
 
 export interface TimelineClip {
   id: string
   sourceClipId: string
-  timelineStart: number   // seconds in the timeline
-  duration: number        // out - in
+  timelineStart: number
+  duration: number
   inPoint: number
   outPoint: number
   volume: number
@@ -65,7 +94,7 @@ export interface TimelineClip {
 
 export interface ProjectSettings {
   name: string
-  eventDate: string       // ISO date
+  eventDate: string
   couple: string
   frameRate: number
   resolution: { width: number; height: number }
@@ -80,9 +109,15 @@ export interface Project {
   savedAt: number
 }
 
-// ──────────────────────────────────────────────
-// UI State
-// ──────────────────────────────────────────────
+export interface RecentProject {
+  path: string
+  name: string
+  couple: string
+  savedAt: number
+  clipCount: number
+}
+
+// ── UI State ──────────────────────────────────
 export type Panel = 'browser' | 'inspector' | 'audio' | 'export'
 export type ViewMode = 'filmstrip' | 'list' | 'icon'
 export type SortField = 'name' | 'duration' | 'rating' | 'flag' | 'date' | 'group'

@@ -2,33 +2,34 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type {
   MediaClip, TimelineClip, ProjectSettings, ViewMode,
-  SortField, FilterMode, ClipRating, ClipFlag, Marker
+  SortField, FilterMode, ClipRating, ClipFlag, Marker,
+  ColorLabel, SubClip, RecentProject, ProxyStatus
 } from '../types'
 
-// ──────────────────────────────────────────────
-// State shape
-// ──────────────────────────────────────────────
 interface ProjectState {
   // Project metadata
   settings: ProjectSettings
   projectPath: string | null
   isDirty: boolean
+  recentProjects: RecentProject[]
 
   // Media library
   clips: MediaClip[]
   selectedClipId: string | null
+  selectedClipIds: string[]   // multi-select
 
   // Timeline
   timelineClips: TimelineClip[]
   timelineCursorSeconds: number
 
-  // Player state
+  // Player
   currentTime: number
   isPlaying: boolean
   playbackRate: number
   loopInOut: boolean
-  volume: number            // master volume
-  audioBalance: number      // master balance
+  volume: number
+  audioBalance: number
+  isFullscreen: boolean
 
   // Browser UI
   viewMode: ViewMode
@@ -38,25 +39,40 @@ interface ProjectState {
   filterGroup: string | null
   searchQuery: string
 
-  // Right panel
-  activePanel: 'inspector' | 'audio' | 'export'
+  // Panels
+  activePanel: 'inspector' | 'audio' | 'proxy'
   showTimeline: boolean
   timelineHeight: number
 
-  // Import progress
+  // Import / proxy progress
   importing: boolean
   importTotal: number
   importProgress: number
+  proxyQueue: string[]   // clip ids being proxied
 
-  // ──────────────────────────────────────────────
+  // ──────────────────────────────────────────
   // Actions
-  // ──────────────────────────────────────────────
+  // ──────────────────────────────────────────
 
   // Clips
   addClips: (clips: MediaClip[]) => void
   removeClip: (id: string) => void
+  removeClips: (ids: string[]) => void
   updateClip: (id: string, patch: Partial<MediaClip>) => void
   selectClip: (id: string | null) => void
+
+  // Multi-select
+  toggleSelectClip: (id: string, additive: boolean) => void
+  selectRange: (anchorId: string, targetId: string) => void
+  selectAll: () => void
+  clearMultiSelect: () => void
+
+  // Batch ops on selectedClipIds
+  batchSetFlag: (flag: ClipFlag) => void
+  batchSetRating: (rating: ClipRating) => void
+  batchSetGroup: (group: string) => void
+  batchSetColorLabel: (label: ColorLabel) => void
+  batchAddToTimeline: () => void
 
   // In/out
   setInPoint: (clipId: string, seconds: number) => void
@@ -64,18 +80,31 @@ interface ProjectState {
   clearInPoint: (clipId: string) => void
   clearOutPoint: (clipId: string) => void
 
-  // Rating / flag
+  // Rating / flag / label
   setRating: (clipId: string, rating: ClipRating) => void
   setFlag: (clipId: string, flag: ClipFlag) => void
+  setColorLabel: (clipId: string, label: ColorLabel) => void
 
   // Markers
   addMarker: (clipId: string, marker: Marker) => void
   removeMarker: (clipId: string, markerId: string) => void
 
+  // Subclips
+  addSubClip: (clipId: string, subClip: SubClip) => void
+  updateSubClip: (clipId: string, subClipId: string, patch: Partial<SubClip>) => void
+  removeSubClip: (clipId: string, subClipId: string) => void
+
+  // Proxy
+  setProxyStatus: (clipId: string, status: ProxyStatus, proxyPath?: string) => void
+  setUseProxy: (clipId: string, useProxy: boolean) => void
+  addToProxyQueue: (clipId: string) => void
+  removeFromProxyQueue: (clipId: string) => void
+
   // Timeline
   addToTimeline: (clipId: string) => void
   removeFromTimeline: (timelineClipId: string) => void
   reorderTimeline: (from: number, to: number) => void
+  trimTimelineClip: (tcId: string, edge: 'in' | 'out', deltaSeconds: number) => void
   setTimelineCursor: (seconds: number) => void
   clearTimeline: () => void
 
@@ -86,6 +115,7 @@ interface ProjectState {
   setLoopInOut: (v: boolean) => void
   setVolume: (v: number) => void
   setAudioBalance: (v: number) => void
+  setIsFullscreen: (v: boolean) => void
 
   // Browser
   setViewMode: (m: ViewMode) => void
@@ -95,7 +125,7 @@ interface ProjectState {
   setSearchQuery: (q: string) => void
 
   // UI layout
-  setActivePanel: (p: 'inspector' | 'audio' | 'export') => void
+  setActivePanel: (p: 'inspector' | 'audio' | 'proxy') => void
   setShowTimeline: (v: boolean) => void
   setTimelineHeight: (h: number) => void
 
@@ -108,16 +138,15 @@ interface ProjectState {
   markDirty: () => void
   markSaved: (path: string) => void
   loadProject: (state: Partial<ProjectState>) => void
+  setRecentProjects: (projects: RecentProject[]) => void
 
-  // Computed helpers
+  // Computed
   getSelectedClip: () => MediaClip | null
   getFilteredClips: () => MediaClip[]
   getGroups: () => string[]
+  getFootageStats: () => { totalDuration: number; selectedDuration: number; picksCount: number; totalSize: number }
 }
 
-// ──────────────────────────────────────────────
-// Store implementation
-// ──────────────────────────────────────────────
 export const useProjectStore = create<ProjectState>()(
   subscribeWithSelector((set, get) => ({
     settings: {
@@ -130,9 +159,11 @@ export const useProjectStore = create<ProjectState>()(
     },
     projectPath: null,
     isDirty: false,
+    recentProjects: [],
 
     clips: [],
     selectedClipId: null,
+    selectedClipIds: [],
 
     timelineClips: [],
     timelineCursorSeconds: 0,
@@ -143,6 +174,7 @@ export const useProjectStore = create<ProjectState>()(
     loopInOut: false,
     volume: 1,
     audioBalance: 0,
+    isFullscreen: false,
 
     viewMode: 'filmstrip',
     sortField: 'name',
@@ -158,6 +190,7 @@ export const useProjectStore = create<ProjectState>()(
     importing: false,
     importTotal: 0,
     importProgress: 0,
+    proxyQueue: [],
 
     // ── Clips ──────────────────────────────────
     addClips: (newClips) =>
@@ -170,7 +203,17 @@ export const useProjectStore = create<ProjectState>()(
       set((s) => ({
         clips: s.clips.filter((c) => c.id !== id),
         selectedClipId: s.selectedClipId === id ? null : s.selectedClipId,
+        selectedClipIds: s.selectedClipIds.filter((x) => x !== id),
         timelineClips: s.timelineClips.filter((tc) => tc.sourceClipId !== id),
+        isDirty: true,
+      })),
+
+    removeClips: (ids) =>
+      set((s) => ({
+        clips: s.clips.filter((c) => !ids.includes(c.id)),
+        selectedClipId: ids.includes(s.selectedClipId ?? '') ? null : s.selectedClipId,
+        selectedClipIds: s.selectedClipIds.filter((x) => !ids.includes(x)),
+        timelineClips: s.timelineClips.filter((tc) => !ids.includes(tc.sourceClipId)),
         isDirty: true,
       })),
 
@@ -181,6 +224,91 @@ export const useProjectStore = create<ProjectState>()(
       })),
 
     selectClip: (id) => set({ selectedClipId: id, currentTime: 0, isPlaying: false }),
+
+    // ── Multi-select ───────────────────────────
+    toggleSelectClip: (id, additive) =>
+      set((s) => {
+        if (!additive) {
+          return { selectedClipIds: [id], selectedClipId: id }
+        }
+        const already = s.selectedClipIds.includes(id)
+        const next = already
+          ? s.selectedClipIds.filter((x) => x !== id)
+          : [...s.selectedClipIds, id]
+        return { selectedClipIds: next, selectedClipId: id }
+      }),
+
+    selectRange: (anchorId, targetId) =>
+      set((s) => {
+        const filtered = get().getFilteredClips()
+        const ai = filtered.findIndex((c) => c.id === anchorId)
+        const ti = filtered.findIndex((c) => c.id === targetId)
+        if (ai === -1 || ti === -1) return {}
+        const [lo, hi] = ai < ti ? [ai, ti] : [ti, ai]
+        const ids = filtered.slice(lo, hi + 1).map((c) => c.id)
+        return { selectedClipIds: ids, selectedClipId: targetId }
+      }),
+
+    selectAll: () =>
+      set((s) => ({
+        selectedClipIds: get().getFilteredClips().map((c) => c.id),
+      })),
+
+    clearMultiSelect: () => set({ selectedClipIds: [] }),
+
+    // ── Batch ops ──────────────────────────────
+    batchSetFlag: (flag) =>
+      set((s) => ({
+        clips: s.clips.map((c) => s.selectedClipIds.includes(c.id) ? { ...c, flag } : c),
+        isDirty: true,
+      })),
+
+    batchSetRating: (rating) =>
+      set((s) => ({
+        clips: s.clips.map((c) => s.selectedClipIds.includes(c.id) ? { ...c, rating } : c),
+        isDirty: true,
+      })),
+
+    batchSetGroup: (group) =>
+      set((s) => ({
+        clips: s.clips.map((c) => s.selectedClipIds.includes(c.id) ? { ...c, group } : c),
+        isDirty: true,
+      })),
+
+    batchSetColorLabel: (colorLabel) =>
+      set((s) => ({
+        clips: s.clips.map((c) => s.selectedClipIds.includes(c.id) ? { ...c, colorLabel } : c),
+        isDirty: true,
+      })),
+
+    batchAddToTimeline: () => {
+      const { selectedClipIds, clips, timelineClips } = get()
+      const toAdd = selectedClipIds
+        .map((id) => clips.find((c) => c.id === id))
+        .filter(Boolean) as MediaClip[]
+
+      let pos = timelineClips.reduce((s, tc) => s + tc.duration, 0)
+      const newTCs: TimelineClip[] = []
+      for (const clip of toAdd) {
+        if (!clip.info) continue
+        const inPt = clip.inPointSet ? clip.inPoint : 0
+        const outPt = clip.outPointSet ? clip.outPoint : clip.info.duration
+        const dur = outPt - inPt
+        newTCs.push({
+          id: `tc_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          sourceClipId: clip.id,
+          timelineStart: pos,
+          duration: dur,
+          inPoint: inPt,
+          outPoint: outPt,
+          volume: clip.volume,
+          audioBalance: clip.audioBalance,
+          trackIndex: 0,
+        })
+        pos += dur
+      }
+      set((s) => ({ timelineClips: [...s.timelineClips, ...newTCs], isDirty: true }))
+    },
 
     // ── In/Out ─────────────────────────────────
     setInPoint: (clipId, seconds) =>
@@ -215,7 +343,7 @@ export const useProjectStore = create<ProjectState>()(
         isDirty: true,
       })),
 
-    // ── Rating / Flag ──────────────────────────
+    // ── Rating / Flag / Label ──────────────────
     setRating: (clipId, rating) =>
       set((s) => ({
         clips: s.clips.map((c) => (c.id === clipId ? { ...c, rating } : c)),
@@ -225,6 +353,12 @@ export const useProjectStore = create<ProjectState>()(
     setFlag: (clipId, flag) =>
       set((s) => ({
         clips: s.clips.map((c) => (c.id === clipId ? { ...c, flag } : c)),
+        isDirty: true,
+      })),
+
+    setColorLabel: (clipId, colorLabel) =>
+      set((s) => ({
+        clips: s.clips.map((c) => (c.id === clipId ? { ...c, colorLabel } : c)),
         isDirty: true,
       })),
 
@@ -245,6 +379,59 @@ export const useProjectStore = create<ProjectState>()(
         isDirty: true,
       })),
 
+    // ── Subclips ───────────────────────────────
+    addSubClip: (clipId, subClip) =>
+      set((s) => ({
+        clips: s.clips.map((c) =>
+          c.id === clipId ? { ...c, subClips: [...c.subClips, subClip] } : c
+        ),
+        isDirty: true,
+      })),
+
+    updateSubClip: (clipId, subClipId, patch) =>
+      set((s) => ({
+        clips: s.clips.map((c) =>
+          c.id === clipId
+            ? { ...c, subClips: c.subClips.map((sc) => sc.id === subClipId ? { ...sc, ...patch } : sc) }
+            : c
+        ),
+        isDirty: true,
+      })),
+
+    removeSubClip: (clipId, subClipId) =>
+      set((s) => ({
+        clips: s.clips.map((c) =>
+          c.id === clipId
+            ? { ...c, subClips: c.subClips.filter((sc) => sc.id !== subClipId) }
+            : c
+        ),
+        isDirty: true,
+      })),
+
+    // ── Proxy ──────────────────────────────────
+    setProxyStatus: (clipId, proxyStatus, proxyPath) =>
+      set((s) => ({
+        clips: s.clips.map((c) =>
+          c.id === clipId ? { ...c, proxyStatus, ...(proxyPath ? { proxyPath } : {}) } : c
+        ),
+        proxyQueue: proxyStatus === 'creating'
+          ? [...s.proxyQueue, clipId]
+          : s.proxyQueue.filter((id) => id !== clipId),
+        isDirty: true,
+      })),
+
+    setUseProxy: (clipId, useProxy) =>
+      set((s) => ({
+        clips: s.clips.map((c) => c.id === clipId ? { ...c, useProxy } : c),
+        isDirty: true,
+      })),
+
+    addToProxyQueue: (clipId) =>
+      set((s) => ({ proxyQueue: [...s.proxyQueue, clipId] })),
+
+    removeFromProxyQueue: (clipId) =>
+      set((s) => ({ proxyQueue: s.proxyQueue.filter((id) => id !== clipId) })),
+
     // ── Timeline ───────────────────────────────
     addToTimeline: (clipId) => {
       const clip = get().clips.find((c) => c.id === clipId)
@@ -252,10 +439,8 @@ export const useProjectStore = create<ProjectState>()(
       const inPt = clip.inPointSet ? clip.inPoint : 0
       const outPt = clip.outPointSet ? clip.outPoint : clip.info.duration
       const duration = outPt - inPt
-
       const existing = get().timelineClips
       const totalDuration = existing.reduce((s, tc) => s + tc.duration, 0)
-
       const tc: TimelineClip = {
         id: `tc_${Date.now()}_${Math.random().toString(36).slice(2)}`,
         sourceClipId: clipId,
@@ -284,6 +469,25 @@ export const useProjectStore = create<ProjectState>()(
         return { timelineClips: recalcPositions(arr), isDirty: true }
       }),
 
+    trimTimelineClip: (tcId, edge, deltaSeconds) =>
+      set((s) => ({
+        timelineClips: recalcPositions(
+          s.timelineClips.map((tc) => {
+            if (tc.id !== tcId) return tc
+            const srcClip = s.clips.find((c) => c.id === tc.sourceClipId)
+            const srcDur = srcClip?.info?.duration ?? 9999
+            if (edge === 'in') {
+              const newIn = Math.max(0, Math.min(tc.inPoint + deltaSeconds, tc.outPoint - 0.1))
+              return { ...tc, inPoint: newIn, duration: tc.outPoint - newIn }
+            } else {
+              const newOut = Math.max(tc.inPoint + 0.1, Math.min(tc.outPoint + deltaSeconds, srcDur))
+              return { ...tc, outPoint: newOut, duration: newOut - tc.inPoint }
+            }
+          })
+        ),
+        isDirty: true,
+      })),
+
     setTimelineCursor: (seconds) => set({ timelineCursorSeconds: seconds }),
     clearTimeline: () => set({ timelineClips: [], isDirty: true }),
 
@@ -294,6 +498,7 @@ export const useProjectStore = create<ProjectState>()(
     setLoopInOut: (v) => set({ loopInOut: v }),
     setVolume: (v) => set({ volume: v }),
     setAudioBalance: (v) => set({ audioBalance: v }),
+    setIsFullscreen: (v) => set({ isFullscreen: v }),
 
     // ── Browser ────────────────────────────────
     setViewMode: (m) => set({ viewMode: m }),
@@ -321,6 +526,7 @@ export const useProjectStore = create<ProjectState>()(
     markDirty: () => set({ isDirty: true }),
     markSaved: (path) => set({ projectPath: path, isDirty: false }),
     loadProject: (state) => set({ ...state, isDirty: false }),
+    setRecentProjects: (projects) => set({ recentProjects: projects }),
 
     // ── Computed ───────────────────────────────
     getSelectedClip: () => {
@@ -331,19 +537,13 @@ export const useProjectStore = create<ProjectState>()(
     getFilteredClips: () => {
       const { clips, filterMode, filterGroup, searchQuery, sortField, sortAscending } = get()
       let result = [...clips]
-
-      // Filter by mode
       switch (filterMode) {
         case 'picks':   result = result.filter((c) => c.flag === 'pick'); break
         case 'rejects': result = result.filter((c) => c.flag === 'reject'); break
         case 'review':  result = result.filter((c) => c.flag === 'review'); break
-        case 'unrated': result = result.filter((c) => c.rating === 0); break
+        case 'unrated': result = result.filter((c) => c.rating === 0 && c.flag === 'none'); break
       }
-
-      // Filter by group
       if (filterGroup) result = result.filter((c) => c.group === filterGroup)
-
-      // Search
       if (searchQuery) {
         const q = searchQuery.toLowerCase()
         result = result.filter((c) =>
@@ -352,8 +552,6 @@ export const useProjectStore = create<ProjectState>()(
           c.reelName.toLowerCase().includes(q)
         )
       }
-
-      // Sort
       result.sort((a, b) => {
         let cmp = 0
         switch (sortField) {
@@ -365,7 +563,6 @@ export const useProjectStore = create<ProjectState>()(
         }
         return sortAscending ? cmp : -cmp
       })
-
       return result
     },
 
@@ -373,10 +570,30 @@ export const useProjectStore = create<ProjectState>()(
       const groups = new Set(get().clips.map((c) => c.group).filter(Boolean))
       return Array.from(groups).sort()
     },
+
+    getFootageStats: () => {
+      const { clips, selectedClipIds } = get()
+      const totalDuration = clips.reduce((s, c) => s + (c.info?.duration ?? 0), 0)
+      const selectedDuration = selectedClipIds.length > 0
+        ? clips
+            .filter((c) => selectedClipIds.includes(c.id))
+            .reduce((s, c) => {
+              const inPt = c.inPointSet ? c.inPoint : 0
+              const outPt = c.outPointSet ? c.outPoint : (c.info?.duration ?? 0)
+              return s + (outPt - inPt)
+            }, 0)
+        : clips.reduce((s, c) => {
+            const inPt = c.inPointSet ? c.inPoint : 0
+            const outPt = c.outPointSet ? c.outPoint : (c.info?.duration ?? 0)
+            return s + (outPt - inPt)
+          }, 0)
+      const picksCount = clips.filter((c) => c.flag === 'pick').length
+      const totalSize = clips.reduce((s, c) => s + (c.info?.size ?? 0), 0)
+      return { totalDuration, selectedDuration, picksCount, totalSize }
+    },
   }))
 )
 
-// Recalculate sequential timeline positions
 function recalcPositions(clips: TimelineClip[]): TimelineClip[] {
   let pos = 0
   return clips.map((tc) => {

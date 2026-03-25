@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useState } from 'react'
+import React, { useEffect, useCallback, useState, useRef } from 'react'
 import { useProjectStore } from './stores/useProjectStore'
 import TitleBar from './components/TitleBar'
 import Toolbar from './components/Toolbar'
@@ -10,7 +10,17 @@ import Timeline from './components/Timeline'
 import ExportModal from './components/ExportModal'
 import ProjectSettingsModal from './components/ProjectSettingsModal'
 import ImportProgress from './components/ImportProgress'
-import { generateFCPXML, generateXMEML, generateEDL, generateCSV } from './utils/xml-export'
+import WelcomeScreen from './components/WelcomeScreen'
+import KeyboardShortcutsOverlay from './components/KeyboardShortcutsOverlay'
+import ProxyPanel from './components/ProxyPanel'
+import {
+  generateFCPXML,
+  generateXMEML,
+  generateAAF,
+  generateDaVinciXML,
+  generateEDL,
+  generateCSV,
+} from './utils/xml-export'
 import type { MediaClip, ExportFormat } from './types'
 
 // ──────────────────────────────────────────────
@@ -36,14 +46,19 @@ async function importFile(filePath: string): Promise<MediaClip | null> {
       outPointSet: false,
       rating: 0,
       flag: 'none',
+      colorLabel: 'none',
       notes: '',
       markers: [],
+      subClips: [],
       volume: 1,
       audioBalance: 0,
       importedAt: Date.now(),
       waveformPeaks: null,
       group: '',
       reelName: fileName.slice(0, 8),
+      proxyPath: null,
+      proxyStatus: 'none',
+      useProxy: false,
     }
     return clip
   } catch (e) {
@@ -59,11 +74,50 @@ export default function App() {
   const store = useProjectStore()
   const [showExport, setShowExport] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
   const [leftWidth, setLeftWidth] = useState(280)
   const [rightWidth, setRightWidth] = useState(300)
   const [isDraggingLeft, setIsDraggingLeft] = useState(false)
   const [isDraggingRight, setIsDraggingRight] = useState(false)
   const [isDraggingTimeline, setIsDraggingTimeline] = useState(false)
+  const autoSaveRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // ── Load recent projects on mount ───────────
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const recent = await window.electronAPI.storeGet('recentProjects')
+        if (Array.isArray(recent)) {
+          store.setRecentProjects(recent)
+        }
+      } catch {
+        // store not yet populated — fine
+      }
+    })()
+  }, [])
+
+  // ── Auto-save every 30s ──────────────────────
+  useEffect(() => {
+    autoSaveRef.current = setInterval(async () => {
+      const state = useProjectStore.getState()
+      if (!state.projectPath || state.clips.length === 0) return
+      try {
+        const json = JSON.stringify({
+          version: '1.0',
+          settings: state.settings,
+          clips: state.clips,
+          timeline: state.timelineClips,
+          savedAt: Date.now(),
+        }, null, 2)
+        await window.electronAPI.writeFile(state.projectPath, json)
+      } catch {
+        // silent auto-save failure
+      }
+    }, 30_000)
+    return () => {
+      if (autoSaveRef.current) clearInterval(autoSaveRef.current)
+    }
+  }, [])
 
   // ── Import handlers ─────────────────────────
   const handleImportFiles = useCallback(async () => {
@@ -120,6 +174,16 @@ export default function App() {
         ext = 'xml'
         filterName = 'Premiere Pro / DaVinci XML'
         break
+      case 'aaf':
+        content = generateAAF(settings, clips, timelineClips)
+        ext = 'xml'
+        filterName = 'AAF-Compatible XML'
+        break
+      case 'davinci':
+        content = generateDaVinciXML(settings, clips, timelineClips)
+        ext = 'fcpxml'
+        filterName = 'DaVinci Resolve XML'
+        break
       case 'edl':
         content = generateEDL(settings, clips, timelineClips)
         ext = 'edl'
@@ -130,6 +194,8 @@ export default function App() {
         ext = 'csv'
         filterName = 'CSV Log'
         break
+      default:
+        return
     }
 
     const savePath = await api.saveFile({
@@ -168,11 +234,20 @@ export default function App() {
     }, null, 2)
     await api.writeFile(savePath, json)
     store.markSaved(savePath)
+
+    // Update recent projects
+    const recents = useProjectStore.getState().recentProjects ?? []
+    const next = [
+      { path: savePath, name: state.settings.name, couple: state.settings.couple, savedAt: Date.now() },
+      ...recents.filter((r: any) => r.path !== savePath),
+    ].slice(0, 10)
+    store.setRecentProjects(next)
+    await api.storeSet('recentProjects', next)
   }, [store])
 
-  const handleOpenProject = useCallback(async () => {
+  const handleOpenProject = useCallback(async (filePath?: string) => {
     const api = window.electronAPI
-    const path = await api.openProject()
+    const path = filePath ?? (await api.openProject())
     if (!path) return
     const json = await api.readFile(path)
     const data = JSON.parse(json)
@@ -182,6 +257,42 @@ export default function App() {
       timelineClips: data.timeline,
       projectPath: path,
     })
+
+    // Update recent
+    const recents = useProjectStore.getState().recentProjects ?? []
+    const next = [
+      { path, name: data.settings.name, couple: data.settings.couple, savedAt: Date.now() },
+      ...recents.filter((r: any) => r.path !== path),
+    ].slice(0, 10)
+    store.setRecentProjects(next)
+    await api.storeSet('recentProjects', next)
+  }, [store])
+
+  // ── Global keyboard shortcuts ────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+      if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
+        e.preventDefault()
+        setShowShortcuts((v) => !v)
+        return
+      }
+      if (e.key === 'Escape') {
+        setShowShortcuts(false)
+        setShowExport(false)
+        setShowSettings(false)
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
+        e.preventDefault()
+        store.selectAll()
+        return
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
   }, [store])
 
   // ── Menu event listeners ────────────────────
@@ -191,11 +302,13 @@ export default function App() {
       api.onMenu('import', handleImportFiles),
       api.onMenu('import-folder', handleImportFolder),
       api.onMenu('save', handleSaveProject),
-      api.onMenu('open-project', handleOpenProject),
+      api.onMenu('open-project', () => handleOpenProject()),
       api.onMenu('export', () => setShowExport(true)),
+      api.onMenu('select-all', () => store.selectAll()),
+      api.onMenu('shortcuts', () => setShowShortcuts(true)),
     ]
     return () => unsubs.forEach((u) => u())
-  }, [handleImportFiles, handleImportFolder, handleSaveProject, handleOpenProject])
+  }, [handleImportFiles, handleImportFolder, handleSaveProject, handleOpenProject, store])
 
   // ── Drag-to-resize panels ───────────────────
   useEffect(() => {
@@ -230,7 +343,7 @@ export default function App() {
       e.preventDefault()
       const files = Array.from(e.dataTransfer?.files ?? [])
         .filter((f) => f.type.startsWith('video/') || /\.(mp4|mov|mxf|avi|mkv|webm|mts|m2ts)$/i.test(f.name))
-        .map((f) => f.path)
+        .map((f) => (f as any).path as string)
       if (!files.length) return
       store.setImporting(true, files.length)
       const imported: MediaClip[] = []
@@ -251,7 +364,7 @@ export default function App() {
     }
   }, [store])
 
-  const { activePanel, showTimeline, timelineHeight } = store
+  const { activePanel, showTimeline, timelineHeight, clips, importing } = store
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#06060c] overflow-hidden">
@@ -263,104 +376,108 @@ export default function App() {
         onExport={() => setShowExport(true)}
       />
 
-      {/* Toolbar */}
-      <Toolbar
-        onImport={handleImportFiles}
-        onImportFolder={handleImportFolder}
-        onExport={() => setShowExport(true)}
-      />
-
-      {/* Main layout */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left: Media Browser */}
-        <div
-          className="flex-shrink-0 flex flex-col overflow-hidden border-r border-white/[0.06]"
-          style={{ width: leftWidth }}
-        >
-          <MediaBrowser onImport={handleImportFiles} onImportFolder={handleImportFolder} />
-        </div>
-
-        {/* Left resize handle */}
-        <div
-          className="resize-handle-v w-1 hover:bg-white/10 flex-shrink-0 transition-colors"
-          onMouseDown={() => setIsDraggingLeft(true)}
+      {/* Welcome screen when no clips */}
+      {clips.length === 0 && !importing && (
+        <WelcomeScreen
+          onImport={handleImportFiles}
+          onImportFolder={handleImportFolder}
+          onOpenProject={() => handleOpenProject()}
         />
+      )}
 
-        {/* Center: Player + Timeline */}
-        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-          {/* Video player */}
-          <div className="flex-1 overflow-hidden min-h-0">
-            <VideoPlayer />
-          </div>
+      {/* Main layout — only shown when clips are loaded */}
+      {clips.length > 0 && (
+        <>
+          {/* Toolbar */}
+          <Toolbar
+            onImport={handleImportFiles}
+            onImportFolder={handleImportFolder}
+            onExport={() => setShowExport(true)}
+          />
 
-          {/* Timeline resize handle */}
-          {showTimeline && (
+          <div className="flex flex-1 overflow-hidden">
+            {/* Left: Media Browser */}
             <div
-              className="resize-handle h-1 bg-white/[0.04] hover:bg-white/10 flex-shrink-0 transition-colors flex items-center justify-center"
-              onMouseDown={() => setIsDraggingTimeline(true)}
+              className="flex-shrink-0 flex flex-col overflow-hidden border-r border-white/[0.06]"
+              style={{ width: leftWidth }}
             >
-              <div className="w-16 h-0.5 rounded-full bg-white/20" />
+              <MediaBrowser onImport={handleImportFiles} onImportFolder={handleImportFolder} />
             </div>
-          )}
 
-          {/* Timeline */}
-          {showTimeline && (
+            {/* Left resize handle */}
             <div
-              className="flex-shrink-0 border-t border-white/[0.06] overflow-hidden"
-              style={{ height: timelineHeight }}
-            >
-              <Timeline />
-            </div>
-          )}
-        </div>
+              className="resize-handle-v w-1 hover:bg-white/10 flex-shrink-0 transition-colors"
+              onMouseDown={() => setIsDraggingLeft(true)}
+            />
 
-        {/* Right resize handle */}
-        <div
-          className="resize-handle-v w-1 hover:bg-white/10 flex-shrink-0 transition-colors"
-          onMouseDown={() => setIsDraggingRight(true)}
-        />
-
-        {/* Right: Inspector / Audio / Export */}
-        <div
-          className="flex-shrink-0 flex flex-col overflow-hidden border-l border-white/[0.06]"
-          style={{ width: rightWidth }}
-        >
-          {/* Panel tabs */}
-          <div className="flex border-b border-white/[0.06] flex-shrink-0">
-            {(['inspector', 'audio', 'export'] as const).map((panel) => (
-              <button
-                key={panel}
-                onClick={() => store.setActivePanel(panel)}
-                className={`flex-1 py-2 text-xs font-medium tracking-wide capitalize transition-colors no-drag ${
-                  activePanel === panel
-                    ? 'text-white/90 border-b border-[#e4bc72]'
-                    : 'text-white/40 hover:text-white/60'
-                }`}
-              >
-                {panel === 'inspector' ? 'Info' : panel === 'audio' ? 'Audio' : 'Export'}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex-1 overflow-hidden">
-            {activePanel === 'inspector' && <InspectorPanel />}
-            {activePanel === 'audio' && <AudioPanel />}
-            {activePanel === 'export' && (
-              <div className="flex items-center justify-center h-full">
-                <button
-                  className="btn-apple-accent btn-apple"
-                  onClick={() => setShowExport(true)}
-                >
-                  Export XML…
-                </button>
+            {/* Center: Player + Timeline */}
+            <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+              {/* Video player */}
+              <div className="flex-1 overflow-hidden min-h-0">
+                <VideoPlayer />
               </div>
-            )}
+
+              {/* Timeline resize handle */}
+              {showTimeline && (
+                <div
+                  className="resize-handle h-1 bg-white/[0.04] hover:bg-white/10 flex-shrink-0 transition-colors flex items-center justify-center"
+                  onMouseDown={() => setIsDraggingTimeline(true)}
+                >
+                  <div className="w-16 h-0.5 rounded-full bg-white/20" />
+                </div>
+              )}
+
+              {/* Timeline */}
+              {showTimeline && (
+                <div
+                  className="flex-shrink-0 border-t border-white/[0.06] overflow-hidden"
+                  style={{ height: timelineHeight }}
+                >
+                  <Timeline />
+                </div>
+              )}
+            </div>
+
+            {/* Right resize handle */}
+            <div
+              className="resize-handle-v w-1 hover:bg-white/10 flex-shrink-0 transition-colors"
+              onMouseDown={() => setIsDraggingRight(true)}
+            />
+
+            {/* Right: Inspector / Audio / Proxy */}
+            <div
+              className="flex-shrink-0 flex flex-col overflow-hidden border-l border-white/[0.06]"
+              style={{ width: rightWidth }}
+            >
+              {/* Panel tabs */}
+              <div className="flex border-b border-white/[0.06] flex-shrink-0">
+                {(['inspector', 'audio', 'proxy'] as const).map((panel) => (
+                  <button
+                    key={panel}
+                    onClick={() => store.setActivePanel(panel)}
+                    className={`flex-1 py-2 text-xs font-medium tracking-wide capitalize transition-colors no-drag ${
+                      activePanel === panel
+                        ? 'text-white/90 border-b border-[#e4bc72]'
+                        : 'text-white/40 hover:text-white/60'
+                    }`}
+                  >
+                    {panel === 'inspector' ? 'Info' : panel === 'audio' ? 'Audio' : 'Proxy'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1 overflow-hidden">
+                {activePanel === 'inspector' && <InspectorPanel />}
+                {activePanel === 'audio' && <AudioPanel />}
+                {activePanel === 'proxy' && <ProxyPanel />}
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
 
       {/* Import progress overlay */}
-      {store.importing && <ImportProgress />}
+      {importing && <ImportProgress />}
 
       {/* Modals */}
       {showExport && (
@@ -368,6 +485,9 @@ export default function App() {
       )}
       {showSettings && (
         <ProjectSettingsModal onClose={() => setShowSettings(false)} />
+      )}
+      {showShortcuts && (
+        <KeyboardShortcutsOverlay onClose={() => setShowShortcuts(false)} />
       )}
     </div>
   )
