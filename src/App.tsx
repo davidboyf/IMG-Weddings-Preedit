@@ -14,6 +14,8 @@ import ImportProgress from './components/ImportProgress'
 import WelcomeScreen from './components/WelcomeScreen'
 import KeyboardShortcutsOverlay from './components/KeyboardShortcutsOverlay'
 import ProxyPanel from './components/ProxyPanel'
+import DuplicateDetector from './components/DuplicateDetector'
+import StabilizationPanel from './components/StabilizationPanel'
 import {
   generateFCPXML,
   generateXMEML,
@@ -60,6 +62,9 @@ async function importFile(filePath: string): Promise<MediaClip | null> {
       proxyPath: null,
       proxyStatus: 'none',
       useProxy: false,
+      stabilizationStatus: 'none',
+      stabilizedPath: null,
+      useStabilized: false,
     }
     return clip
   } catch (e) {
@@ -77,6 +82,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showRender, setShowRender] = useState(false)
+  const [showDuplicates, setShowDuplicates] = useState(false)
   const [leftWidth, setLeftWidth] = useState(280)
   const [rightWidth, setRightWidth] = useState(300)
   const [isDraggingLeft, setIsDraggingLeft] = useState(false)
@@ -403,6 +409,7 @@ export default function App() {
             onImportFolder={handleImportFolder}
             onExport={() => setShowExport(true)}
             onRender={() => setShowRender(true)}
+            onDuplicates={() => setShowDuplicates(true)}
           />
 
           <div className="flex flex-1 overflow-hidden">
@@ -454,24 +461,24 @@ export default function App() {
               onMouseDown={() => setIsDraggingRight(true)}
             />
 
-            {/* Right: Inspector / Audio / Proxy */}
+            {/* Right: Inspector / Audio / Proxy / Stabilize */}
             <div
               className="flex-shrink-0 flex flex-col overflow-hidden border-l border-white/[0.06]"
               style={{ width: rightWidth }}
             >
               {/* Panel tabs */}
               <div className="flex border-b border-white/[0.06] flex-shrink-0">
-                {(['inspector', 'audio', 'proxy'] as const).map((panel) => (
+                {(['inspector', 'audio', 'proxy', 'stabilize'] as const).map((panel) => (
                   <button
                     key={panel}
-                    onClick={() => store.setActivePanel(panel)}
-                    className={`flex-1 py-2 text-xs font-medium tracking-wide capitalize transition-colors no-drag ${
+                    onClick={() => store.setActivePanel(panel as any)}
+                    className={`flex-1 py-2 text-[10px] font-medium tracking-wide capitalize transition-colors no-drag ${
                       activePanel === panel
                         ? 'text-white/90 border-b border-[#e4bc72]'
                         : 'text-white/40 hover:text-white/60'
                     }`}
                   >
-                    {panel === 'inspector' ? 'Info' : panel === 'audio' ? 'Audio' : 'Proxy'}
+                    {panel === 'inspector' ? 'Info' : panel === 'audio' ? 'Audio' : panel === 'proxy' ? 'Proxy' : 'Stab'}
                   </button>
                 ))}
               </div>
@@ -480,6 +487,7 @@ export default function App() {
                 {activePanel === 'inspector' && <InspectorPanel />}
                 {activePanel === 'audio' && <AudioPanel />}
                 {activePanel === 'proxy' && <ProxyPanel />}
+                {(activePanel as string) === 'stabilize' && <StabilizationPanel />}
               </div>
             </div>
           </div>
@@ -501,6 +509,9 @@ export default function App() {
       )}
       {showRender && (
         <RenderModal onClose={() => setShowRender(false)} />
+      )}
+      {showDuplicates && (
+        <DuplicateDetector onClose={() => setShowDuplicates(false)} />
       )}
     </div>
   )

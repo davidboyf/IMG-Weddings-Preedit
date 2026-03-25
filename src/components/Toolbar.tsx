@@ -1,5 +1,5 @@
 import React from 'react'
-import { FolderOpen, FilePlus2, Download, Grid3x3, List, Film, Rows3, Clock, HardDrive, Clapperboard } from 'lucide-react'
+import { FolderOpen, FilePlus2, Download, Grid3x3, List, Film, Rows3, Clock, HardDrive, Clapperboard, Sparkles } from 'lucide-react'
 import { useProjectStore } from '../stores/useProjectStore'
 import type { FilterMode, ViewMode } from '../types'
 import { formatDuration, formatFileSize } from '../utils/timecode'
@@ -9,6 +9,7 @@ interface Props {
   onImportFolder: () => void
   onExport: () => void
   onRender: () => void
+  onDuplicates: () => void
 }
 
 const FILTER_MODES: { mode: FilterMode; label: string }[] = [
@@ -19,7 +20,7 @@ const FILTER_MODES: { mode: FilterMode; label: string }[] = [
   { mode: 'unrated', label: 'Unrated' },
 ]
 
-export default function Toolbar({ onImport, onImportFolder, onExport, onRender }: Props) {
+export default function Toolbar({ onImport, onImportFolder, onExport, onRender, onDuplicates }: Props) {
   const {
     filterMode, setFilterMode,
     viewMode, setViewMode,
@@ -146,6 +147,12 @@ export default function Toolbar({ onImport, onImportFolder, onExport, onRender }
       <button onClick={onExport} className="btn-apple btn-apple-accent flex items-center gap-1.5 flex-shrink-0">
         <Download className="w-3.5 h-3.5" />
         <span>Export</span>
+      </button>
+
+      {/* Find Duplicates */}
+      <button onClick={onDuplicates} className="btn-apple flex items-center gap-1.5 flex-shrink-0" title="Find duplicate clips">
+        <Sparkles className="w-3.5 h-3.5" />
+        <span>Dupes</span>
       </button>
 
       {/* Render Video */}

@@ -7,6 +7,8 @@ export type ClipFlag = 'none' | 'pick' | 'reject' | 'review'
 export type ColorLabel = 'none' | 'red' | 'orange' | 'yellow' | 'green' | 'teal' | 'blue' | 'purple'
 export type ExportFormat = 'fcpxml' | 'xmeml' | 'edl' | 'csv' | 'aaf' | 'davinci' | 'clip-export'
 export type ProxyStatus = 'none' | 'creating' | 'ready' | 'error'
+export type StabilizationStatus = 'none' | 'analyzing' | 'stabilizing' | 'done' | 'error'
+export type StabilizationMode = 'cinematic' | 'walk' | 'locked' | 'action'
 
 export const COLOR_LABEL_HEX: Record<ColorLabel, string> = {
   none:   'transparent',
@@ -73,6 +75,10 @@ export interface MediaClip {
   proxyPath: string | null
   proxyStatus: ProxyStatus
   useProxy: boolean
+  // Stabilization
+  stabilizationStatus: StabilizationStatus
+  stabilizedPath: string | null
+  useStabilized: boolean
   // Metadata
   importedAt: number
   waveformPeaks: number[] | null

@@ -5,6 +5,7 @@ import type {
   SortField, FilterMode, ClipRating, ClipFlag, Marker,
   ColorLabel, SubClip, RecentProject, ProxyStatus,
   ColorCorrection, TransitionType, MusicTrack,
+  StabilizationStatus,
 } from '../types'
 
 interface ProjectState {
@@ -46,7 +47,7 @@ interface ProjectState {
   searchQuery: string
 
   // Panels
-  activePanel: 'inspector' | 'audio' | 'proxy'
+  activePanel: 'inspector' | 'audio' | 'proxy' | 'stabilize'
   showTimeline: boolean
   timelineHeight: number
 
@@ -103,6 +104,10 @@ interface ProjectState {
   // Proxy
   setProxyStatus: (clipId: string, status: ProxyStatus, proxyPath?: string) => void
   setUseProxy: (clipId: string, useProxy: boolean) => void
+
+  // Stabilization
+  setStabilizationStatus: (clipId: string, status: StabilizationStatus, stabilizedPath?: string) => void
+  setUseStabilized: (clipId: string, useStabilized: boolean) => void
   addToProxyQueue: (clipId: string) => void
   removeFromProxyQueue: (clipId: string) => void
 
@@ -464,6 +469,23 @@ export const useProjectStore = create<ProjectState>()(
 
     removeFromProxyQueue: (clipId) =>
       set((s) => ({ proxyQueue: s.proxyQueue.filter((id) => id !== clipId) })),
+
+    // ── Stabilization ──────────────────────────
+    setStabilizationStatus: (clipId, stabilizationStatus, stabilizedPath) =>
+      set((s) => ({
+        clips: s.clips.map((c) =>
+          c.id === clipId
+            ? { ...c, stabilizationStatus, ...(stabilizedPath ? { stabilizedPath } : {}) }
+            : c
+        ),
+        isDirty: true,
+      })),
+
+    setUseStabilized: (clipId, useStabilized) =>
+      set((s) => ({
+        clips: s.clips.map((c) => c.id === clipId ? { ...c, useStabilized } : c),
+        isDirty: true,
+      })),
 
     // ── Timeline ───────────────────────────────
     addToTimeline: (clipId) => {

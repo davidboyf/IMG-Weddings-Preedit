@@ -406,6 +406,122 @@ ipcMain.handle('ffmpeg:createProxy', async (_e, clipId: string, filePath: string
 })
 
 // ──────────────────────────────────────────────
+// IPC: Advanced Two-Pass Video Stabilization
+//
+// Pipeline (per clip):
+//   Pass 1 — vidstabdetect: motion analysis, writes transform data to .trf file
+//            shakiness=10  (max), accuracy=15 (max), stepsize=6
+//   Pass 2 — vidstabtransform: apply smoothed path + adaptive zoom
+//            + unsharp mask: restores detail after bicubic interpolation
+//            + deflicker: removes frame-to-frame luminance fluctuations
+//
+// Modes:
+//   cinematic — smoothing=30, virtual tripod disabled, very smooth glide
+//   walk      — smoothing=15, natural handheld-on-purpose feel
+//   locked    — virtualTripod=1, eliminates all camera movement
+//   action    — smoothing=8, preserves energy while removing harsh jitter
+// ──────────────────────────────────────────────
+
+const STAB_MODE_PARAMS: Record<string, { smoothing: number; virtualTripod: number; zoomspeed: number; optzoom: number }> = {
+  cinematic: { smoothing: 30, virtualTripod: 0, zoomspeed: 0.25, optzoom: 2 },
+  walk:      { smoothing: 15, virtualTripod: 0, zoomspeed: 0.4,  optzoom: 2 },
+  locked:    { smoothing: 50, virtualTripod: 1, zoomspeed: 0.2,  optzoom: 0 },
+  action:    { smoothing: 8,  virtualTripod: 0, zoomspeed: 0.8,  optzoom: 2 },
+}
+
+ipcMain.handle('ffmpeg:stabilize', async (_e, payload: {
+  clipId: string
+  filePath: string
+  outputDir: string
+  mode: string
+  duration: number
+}) => {
+  const { clipId, filePath, outputDir, mode, duration } = payload
+  const params = STAB_MODE_PARAMS[mode] ?? STAB_MODE_PARAMS.cinematic
+
+  return new Promise<{ success: boolean; stabilizedPath?: string; error?: string }>((resolve) => {
+    const name = filePath.split('/').pop()?.replace(/\.[^.]+$/, '') ?? 'clip'
+    const trfFile = join(tmpdir(), `stab_${clipId}_${Date.now()}.trf`)
+    const outPath = join(outputDir, `${name}_stabilized.mp4`)
+
+    // ── Pass 1: motion analysis ──────────────────────────────────────────────
+    const pass1Args = [
+      '-i', filePath,
+      '-vf', [
+        `vidstabdetect=shakiness=10:accuracy=15:stepsize=6:mincontrast=0.2:show=0:result=${trfFile}`,
+      ].join(','),
+      '-f', 'null', '-',
+    ]
+
+    const pass1 = execFile(ffmpegPath, pass1Args, { maxBuffer: 50 * 1024 * 1024 }, (err1) => {
+      if (err1) return resolve({ success: false, error: `Pass 1 failed: ${err1.message}` })
+
+      // ── Pass 2: stabilize + enhance ─────────────────────────────────────────
+      const transformFilter = params.virtualTripod
+        ? `vidstabtransform=input=${trfFile}:smoothing=${params.smoothing}:optzoom=${params.optzoom}:interpol=bicubic:virtualTripod=1`
+        : `vidstabtransform=input=${trfFile}:smoothing=${params.smoothing}:optzoom=${params.optzoom}:zoomspeed=${params.zoomspeed}:maxshift=-1:maxangle=-1:crop=keep:relative=1:interpol=bicubic`
+
+      // Post-processing chain:
+      // 1. unsharp — compensates for bicubic interpolation softness (luma + chroma)
+      // 2. deflicker — removes per-frame brightness flicker common after stabilization
+      const vf = [
+        transformFilter,
+        'unsharp=5:5:0.8:3:3:0.4',
+        'deflicker=size=5:mode=pm',
+      ].join(',')
+
+      const pass2Args = [
+        '-i', filePath,
+        '-vf', vf,
+        '-c:v', 'libx264',
+        '-crf', '18',
+        '-preset', 'slow',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        '-y',
+        outPath,
+      ]
+
+      const pass2 = execFile(ffmpegPath, pass2Args, { maxBuffer: 500 * 1024 * 1024 }, (err2) => {
+        // Clean up .trf file
+        try { if (existsSync(trfFile)) require('fs').unlinkSync(trfFile) } catch {}
+        if (err2) resolve({ success: false, error: `Pass 2 failed: ${err2.message}` })
+        else resolve({ success: true, stabilizedPath: outPath })
+      })
+
+      pass2.stderr?.on('data', (data: Buffer) => {
+        const str = data.toString()
+        const m = str.match(/time=(\d+):(\d+):(\d+\.\d+)/)
+        if (m) {
+          const elapsed = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3])
+          mainWindow?.webContents.send('stabilize:progress', {
+            clipId,
+            phase: 'stabilize',
+            elapsed,
+            totalDuration: duration,
+          })
+        }
+      })
+    })
+
+    pass1.stderr?.on('data', (data: Buffer) => {
+      const str = data.toString()
+      const m = str.match(/time=(\d+):(\d+):(\d+\.\d+)/)
+      if (m) {
+        const elapsed = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3])
+        mainWindow?.webContents.send('stabilize:progress', {
+          clipId,
+          phase: 'analyze',
+          elapsed,
+          totalDuration: duration,
+        })
+      }
+    })
+  })
+})
+
+// ──────────────────────────────────────────────
 // IPC: Open audio file dialog
 // ──────────────────────────────────────────────
 ipcMain.handle('dialog:openAudio', async () => {

@@ -102,6 +102,27 @@ const api = {
     ipcRenderer.on('render:progress', handler)
     return () => ipcRenderer.removeListener('render:progress', handler)
   },
+
+  // Advanced two-pass stabilization
+  stabilizeClip: (payload: {
+    clipId: string
+    filePath: string
+    outputDir: string
+    mode: string
+    duration: number
+  }): Promise<{ success: boolean; stabilizedPath?: string; error?: string }> =>
+    ipcRenderer.invoke('ffmpeg:stabilize', payload),
+
+  onStabilizationProgress: (callback: (data: {
+    clipId: string
+    phase: 'analyze' | 'stabilize'
+    elapsed: number
+    totalDuration: number
+  }) => void) => {
+    const handler = (_: any, data: any) => callback(data)
+    ipcRenderer.on('stabilize:progress', handler)
+    return () => ipcRenderer.removeListener('stabilize:progress', handler)
+  },
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)
