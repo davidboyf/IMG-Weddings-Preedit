@@ -78,6 +78,30 @@ const api = {
     ipcRenderer.on('proxy:progress', handler)
     return () => ipcRenderer.removeListener('proxy:progress', handler)
   },
+
+  // Audio
+  openAudio: (): Promise<string | null> => ipcRenderer.invoke('dialog:openAudio'),
+  getAudioDuration: (filePath: string): Promise<number> => ipcRenderer.invoke('ffprobe:audioDuration', filePath),
+
+  // Full render
+  renderTimeline: (payload: {
+    timelineClips: any[]
+    clips: any[]
+    musicTracks: any[]
+    outputPath: string
+    fps: number
+    codec: string
+    quality: string
+    resolution: string
+  }): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('ffmpeg:renderTimeline', payload),
+
+  // Render progress events
+  onRenderProgress: (callback: (data: { elapsed: number }) => void) => {
+    const handler = (_: any, data: any) => callback(data)
+    ipcRenderer.on('render:progress', handler)
+    return () => ipcRenderer.removeListener('render:progress', handler)
+  },
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

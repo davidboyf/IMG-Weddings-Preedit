@@ -1,5 +1,5 @@
 import React from 'react'
-import { FolderOpen, FilePlus2, Download, Grid3x3, List, Film, Rows3, Clock, HardDrive } from 'lucide-react'
+import { FolderOpen, FilePlus2, Download, Grid3x3, List, Film, Rows3, Clock, HardDrive, Clapperboard } from 'lucide-react'
 import { useProjectStore } from '../stores/useProjectStore'
 import type { FilterMode, ViewMode } from '../types'
 import { formatDuration, formatFileSize } from '../utils/timecode'
@@ -8,6 +8,7 @@ interface Props {
   onImport: () => void
   onImportFolder: () => void
   onExport: () => void
+  onRender: () => void
 }
 
 const FILTER_MODES: { mode: FilterMode; label: string }[] = [
@@ -18,7 +19,7 @@ const FILTER_MODES: { mode: FilterMode; label: string }[] = [
   { mode: 'unrated', label: 'Unrated' },
 ]
 
-export default function Toolbar({ onImport, onImportFolder, onExport }: Props) {
+export default function Toolbar({ onImport, onImportFolder, onExport, onRender }: Props) {
   const {
     filterMode, setFilterMode,
     viewMode, setViewMode,
@@ -145,6 +146,13 @@ export default function Toolbar({ onImport, onImportFolder, onExport }: Props) {
       <button onClick={onExport} className="btn-apple btn-apple-accent flex items-center gap-1.5 flex-shrink-0">
         <Download className="w-3.5 h-3.5" />
         <span>Export</span>
+      </button>
+
+      {/* Render Video */}
+      <button onClick={onRender} className="btn-apple flex items-center gap-1.5 flex-shrink-0" title="Render Video (⌘R)"
+        style={{ background: 'rgba(228,188,114,0.12)', border: '1px solid rgba(228,188,114,0.25)', color: '#e4bc72' }}>
+        <Clapperboard className="w-3.5 h-3.5" />
+        <span>Render</span>
       </button>
     </div>
   )

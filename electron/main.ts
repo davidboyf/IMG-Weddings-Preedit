@@ -114,6 +114,8 @@ function buildMenu() {
         { label: 'Save Project', accelerator: 'CmdOrCtrl+S', click: () => mainWindow?.webContents.send('menu:save') },
         { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: () => mainWindow?.webContents.send('menu:open-project') },
         { type: 'separator' },
+        { label: 'Render Video…', accelerator: 'CmdOrCtrl+R', click: () => mainWindow?.webContents.send('menu:render') },
+        { type: 'separator' },
         { label: 'Export XML…', accelerator: 'CmdOrCtrl+E', click: () => mainWindow?.webContents.send('menu:export') },
         { label: 'Export Clips…', accelerator: 'CmdOrCtrl+Shift+E', click: () => mainWindow?.webContents.send('menu:export-clips') },
       ],
@@ -402,3 +404,199 @@ ipcMain.handle('ffmpeg:createProxy', async (_e, clipId: string, filePath: string
     })
   })
 })
+
+// ──────────────────────────────────────────────
+// IPC: Open audio file dialog
+// ──────────────────────────────────────────────
+ipcMain.handle('dialog:openAudio', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Audio Files', extensions: ['mp3', 'wav', 'aac', 'm4a', 'flac', 'ogg', 'aiff'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  })
+  return result.canceled ? null : result.filePaths[0]
+})
+
+// ──────────────────────────────────────────────
+// IPC: FFprobe — audio duration
+// ──────────────────────────────────────────────
+ipcMain.handle('ffprobe:audioDuration', async (_e, filePath: string) => {
+  return new Promise((resolve) => {
+    const args = ['-v', 'quiet', '-print_format', 'json', '-show_format', filePath]
+    execFile(ffprobePath, args, { maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      if (err) return resolve(0)
+      try {
+        const data = JSON.parse(stdout)
+        resolve(parseFloat(data.format?.duration ?? '0'))
+      } catch { resolve(0) }
+    })
+  })
+})
+
+// ──────────────────────────────────────────────
+// IPC: FFmpeg — full timeline render
+// ──────────────────────────────────────────────
+ipcMain.handle('ffmpeg:renderTimeline', async (_e, payload: {
+  timelineClips: any[]
+  clips: any[]
+  musicTracks: any[]
+  outputPath: string
+  fps: number
+  codec: string
+  quality: string
+  resolution: string
+}) => {
+  const { timelineClips, clips, musicTracks, outputPath, fps, codec, quality, resolution } = payload
+
+  return new Promise<{ success: boolean; error?: string }>((resolve) => {
+    if (!timelineClips.length) return resolve({ success: false, error: 'No clips in timeline' })
+
+    const args: string[] = ['-y']
+
+    // Add video inputs
+    for (const tc of timelineClips) {
+      const src = clips.find((c: any) => c.id === tc.sourceClipId)
+      if (!src) continue
+      const srcDur = (tc.outPoint - tc.inPoint)
+      args.push('-ss', String(tc.inPoint), '-t', String(srcDur), '-i', src.filePath)
+    }
+
+    // Add music inputs
+    for (const mt of musicTracks) {
+      args.push('-i', mt.filePath)
+    }
+
+    const N = timelineClips.length
+    const filters: string[] = []
+
+    // Per-clip video + audio filters
+    for (let i = 0; i < N; i++) {
+      const tc = timelineClips[i]
+      const cc = tc.color ?? { brightness: 0, contrast: 1, saturation: 1 }
+      const speed = tc.speed ?? 1
+
+      // Scale filter
+      let scaleStr = ''
+      if (resolution === '4k') scaleStr = 'scale=3840:-2:flags=lanczos,'
+      else if (resolution === '1080p') scaleStr = 'scale=1920:-2:flags=lanczos,'
+      else if (resolution === '720p') scaleStr = 'scale=1280:-2:flags=lanczos,'
+
+      const eqStr = `eq=brightness=${cc.brightness}:contrast=${cc.contrast}:saturation=${cc.saturation}`
+      const speedStr = speed !== 1 ? `,setpts=PTS/${speed},fps=${fps}` : ''
+      filters.push(`[${i}:v]${scaleStr}${eqStr}${speedStr}[pv${i}]`)
+
+      // Audio: atempo chain + volume
+      const atempoStr = speed !== 1 ? buildAtempoChain(speed) + ',' : ''
+      filters.push(`[${i}:a]${atempoStr}volume=${tc.volume ?? 1}[pa${i}]`)
+    }
+
+    // Check for transitions
+    const hasTransitions = timelineClips.some((tc: any) =>
+      tc.transitionOut?.type && tc.transitionOut.type !== 'none' && tc.transitionOut.duration > 0
+    )
+
+    let finalVLabel: string
+    let finalALabel: string
+
+    if (N === 1) {
+      finalVLabel = 'pv0'
+      finalALabel = 'pa0'
+    } else if (!hasTransitions) {
+      const vInputs = Array.from({ length: N }, (_, i) => `[pv${i}]`).join('')
+      const aInputs = Array.from({ length: N }, (_, i) => `[pa${i}]`).join('')
+      filters.push(`${vInputs}concat=n=${N}:v=1:a=0[concatv]`)
+      filters.push(`${aInputs}concat=n=${N}:v=0:a=1[concata]`)
+      finalVLabel = 'concatv'
+      finalALabel = 'concata'
+    } else {
+      // xfade chain for video, acrossfade for audio
+      let accumDur = timelineClips[0].duration / (timelineClips[0].speed ?? 1)
+      let curVLabel = 'pv0'
+      let curALabel = 'pa0'
+
+      for (let i = 1; i < N; i++) {
+        const prevTc = timelineClips[i - 1]
+        const transType = prevTc.transitionOut?.type ?? 'none'
+        const transDur = (transType !== 'none' ? (prevTc.transitionOut?.duration ?? 0) : 0.04)
+        const clipDur = timelineClips[i].duration / (timelineClips[i].speed ?? 1)
+        const xfadeType = transType !== 'none' ? transType : 'fade'
+        const offset = Math.max(0.01, accumDur - transDur)
+
+        filters.push(`[${curVLabel}][pv${i}]xfade=transition=${xfadeType}:duration=${transDur}:offset=${offset}[xv${i}]`)
+        filters.push(`[${curALabel}][pa${i}]acrossfade=d=${transDur}[xa${i}]`)
+        curVLabel = `xv${i}`
+        curALabel = `xa${i}`
+        accumDur = offset + clipDur
+      }
+
+      finalVLabel = curVLabel
+      finalALabel = curALabel
+    }
+
+    // Music tracks
+    if (musicTracks && musicTracks.length > 0) {
+      for (let m = 0; m < musicTracks.length; m++) {
+        const mt = musicTracks[m]
+        const musicInputIdx = N + m
+        let mf = `[${musicInputIdx}:a]`
+        if (mt.startAt > 0) mf += `adelay=${Math.round(mt.startAt * 1000)}|${Math.round(mt.startAt * 1000)},`
+        mf += `volume=${mt.volume ?? 0.8}`
+        if (mt.fadeIn > 0) mf += `,afade=t=in:st=0:d=${mt.fadeIn}`
+        mf += `[mus${m}]`
+        filters.push(mf)
+      }
+      const mixInputs = [`[${finalALabel}]`, ...musicTracks.map((_: any, m: number) => `[mus${m}]`)].join('')
+      filters.push(`${mixInputs}amix=inputs=${1 + musicTracks.length}:duration=first:dropout_transition=2[finala]`)
+      finalALabel = 'finala'
+    }
+
+    // Output codec settings
+    let vCodec = 'libx264'
+    let crfVal = quality === 'high' ? '18' : quality === 'medium' ? '23' : '28'
+    const vPreset = quality === 'high' ? 'slow' : 'fast'
+    if (codec === 'h265') { vCodec = 'libx265'; crfVal = quality === 'high' ? '22' : quality === 'medium' ? '28' : '32' }
+
+    const fullArgs = [
+      ...args,
+      '-filter_complex', filters.join(';'),
+      '-map', `[${finalVLabel}]`,
+      '-map', `[${finalALabel}]`,
+      '-c:v', vCodec,
+      '-crf', crfVal,
+      '-preset', vPreset,
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac',
+      '-b:a', '256k',
+      '-movflags', '+faststart',
+      outputPath,
+    ]
+
+    const proc = execFile(ffmpegPath, fullArgs, { maxBuffer: 500 * 1024 * 1024 }, (err) => {
+      if (err) resolve({ success: false, error: err.message })
+      else resolve({ success: true })
+    })
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      const str = data.toString()
+      const timeMatch = str.match(/time=(\d+):(\d+):(\d+\.\d+)/)
+      if (timeMatch) {
+        const h = parseInt(timeMatch[1]), m = parseInt(timeMatch[2]), s = parseFloat(timeMatch[3])
+        mainWindow?.webContents.send('render:progress', { elapsed: h * 3600 + m * 60 + s })
+      }
+    })
+  })
+})
+
+function buildAtempoChain(speed: number): string {
+  const filters: string[] = []
+  let remaining = speed
+  if (remaining > 1) {
+    while (remaining > 2.0) { filters.push('atempo=2.0'); remaining /= 2.0 }
+  } else {
+    while (remaining < 0.5) { filters.push('atempo=0.5'); remaining *= 2.0 }
+  }
+  filters.push(`atempo=${remaining.toFixed(4)}`)
+  return filters.join(',')
+}

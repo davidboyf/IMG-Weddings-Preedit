@@ -3,7 +3,8 @@ import { subscribeWithSelector } from 'zustand/middleware'
 import type {
   MediaClip, TimelineClip, ProjectSettings, ViewMode,
   SortField, FilterMode, ClipRating, ClipFlag, Marker,
-  ColorLabel, SubClip, RecentProject, ProxyStatus
+  ColorLabel, SubClip, RecentProject, ProxyStatus,
+  ColorCorrection, TransitionType, MusicTrack,
 } from '../types'
 
 interface ProjectState {
@@ -21,6 +22,11 @@ interface ProjectState {
   // Timeline
   timelineClips: TimelineClip[]
   timelineCursorSeconds: number
+  selectedTimelineClipId: string | null
+  timelineToolMode: 'select' | 'blade'
+
+  // Music
+  musicTracks: MusicTrack[]
 
   // Player
   currentTime: number
@@ -108,6 +114,21 @@ interface ProjectState {
   setTimelineCursor: (seconds: number) => void
   clearTimeline: () => void
 
+  // Timeline clip editing
+  splitTimelineClip: (tcId: string, atTimelineSeconds: number) => void
+  rippleDeleteTimelineClip: (tcId: string) => void
+  setTimelineClipSpeed: (tcId: string, speed: number) => void
+  setTimelineClipColor: (tcId: string, patch: Partial<ColorCorrection>) => void
+  setTimelineClipTransition: (tcId: string, edge: 'in' | 'out', type: TransitionType, duration: number) => void
+  setTimelineClipVolume: (tcId: string, volume: number) => void
+  selectTimelineClip: (tcId: string | null) => void
+  setTimelineToolMode: (mode: 'select' | 'blade') => void
+
+  // Music
+  addMusicTrack: (track: MusicTrack) => void
+  updateMusicTrack: (id: string, patch: Partial<MusicTrack>) => void
+  removeMusicTrack: (id: string) => void
+
   // Player
   setCurrentTime: (t: number) => void
   setIsPlaying: (v: boolean) => void
@@ -147,6 +168,13 @@ interface ProjectState {
   getFootageStats: () => { totalDuration: number; selectedDuration: number; picksCount: number; totalSize: number }
 }
 
+const DEFAULT_TC_FIELDS = {
+  speed: 1,
+  color: { brightness: 0, contrast: 1, saturation: 1 } as ColorCorrection,
+  transitionIn: { type: 'none' as TransitionType, duration: 0 },
+  transitionOut: { type: 'none' as TransitionType, duration: 0 },
+}
+
 export const useProjectStore = create<ProjectState>()(
   subscribeWithSelector((set, get) => ({
     settings: {
@@ -167,6 +195,10 @@ export const useProjectStore = create<ProjectState>()(
 
     timelineClips: [],
     timelineCursorSeconds: 0,
+    selectedTimelineClipId: null,
+    timelineToolMode: 'select',
+
+    musicTracks: [],
 
     currentTime: 0,
     isPlaying: false,
@@ -250,7 +282,7 @@ export const useProjectStore = create<ProjectState>()(
       }),
 
     selectAll: () =>
-      set((s) => ({
+      set((_s) => ({
         selectedClipIds: get().getFilteredClips().map((c) => c.id),
       })),
 
@@ -304,6 +336,7 @@ export const useProjectStore = create<ProjectState>()(
           volume: clip.volume,
           audioBalance: clip.audioBalance,
           trackIndex: 0,
+          ...DEFAULT_TC_FIELDS,
         })
         pos += dur
       }
@@ -451,6 +484,7 @@ export const useProjectStore = create<ProjectState>()(
         volume: clip.volume,
         audioBalance: clip.audioBalance,
         trackIndex: 0,
+        ...DEFAULT_TC_FIELDS,
       }
       set((s) => ({ timelineClips: [...s.timelineClips, tc], isDirty: true }))
     },
@@ -458,6 +492,7 @@ export const useProjectStore = create<ProjectState>()(
     removeFromTimeline: (tcId) =>
       set((s) => ({
         timelineClips: recalcPositions(s.timelineClips.filter((tc) => tc.id !== tcId)),
+        selectedTimelineClipId: s.selectedTimelineClipId === tcId ? null : s.selectedTimelineClipId,
         isDirty: true,
       })),
 
@@ -489,7 +524,120 @@ export const useProjectStore = create<ProjectState>()(
       })),
 
     setTimelineCursor: (seconds) => set({ timelineCursorSeconds: seconds }),
-    clearTimeline: () => set({ timelineClips: [], isDirty: true }),
+    clearTimeline: () => set({ timelineClips: [], selectedTimelineClipId: null, isDirty: true }),
+
+    // ── Timeline clip editing ──────────────────
+    splitTimelineClip: (tcId, atTimelineSeconds) =>
+      set((s) => {
+        const tc = s.timelineClips.find((t) => t.id === tcId)
+        if (!tc) return {}
+
+        const offset = atTimelineSeconds - tc.timelineStart
+        if (offset <= 0.05 || offset >= tc.duration - 0.05) return {}
+
+        const newInPoint1 = tc.inPoint
+        const newOutPoint1 = tc.inPoint + offset
+        const newInPoint2 = tc.inPoint + offset
+        const newOutPoint2 = tc.outPoint
+
+        const speed = tc.speed ?? 1
+        const dur1 = (newOutPoint1 - newInPoint1) / speed
+        const dur2 = (newOutPoint2 - newInPoint2) / speed
+
+        const tc1: TimelineClip = {
+          ...tc,
+          id: `tc_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          inPoint: newInPoint1,
+          outPoint: newOutPoint1,
+          duration: dur1,
+          transitionOut: { type: 'none', duration: 0 },
+        }
+        const tc2: TimelineClip = {
+          ...tc,
+          id: `tc_${Date.now() + 1}_${Math.random().toString(36).slice(2)}`,
+          inPoint: newInPoint2,
+          outPoint: newOutPoint2,
+          duration: dur2,
+          transitionIn: { type: 'none', duration: 0 },
+        }
+
+        const withoutOriginal = s.timelineClips.filter((t) => t.id !== tcId)
+        const idx = s.timelineClips.findIndex((t) => t.id === tcId)
+        const next = [...withoutOriginal.slice(0, idx), tc1, tc2, ...withoutOriginal.slice(idx)]
+
+        return {
+          timelineClips: recalcPositions(next),
+          selectedTimelineClipId: tc1.id,
+          isDirty: true,
+        }
+      }),
+
+    rippleDeleteTimelineClip: (tcId) =>
+      set((s) => ({
+        timelineClips: recalcPositions(s.timelineClips.filter((tc) => tc.id !== tcId)),
+        selectedTimelineClipId: s.selectedTimelineClipId === tcId ? null : s.selectedTimelineClipId,
+        isDirty: true,
+      })),
+
+    setTimelineClipSpeed: (tcId, speed) =>
+      set((s) => {
+        const updated = s.timelineClips.map((tc) => {
+          if (tc.id !== tcId) return tc
+          const clampedSpeed = Math.max(0.25, Math.min(4.0, speed))
+          const newDuration = (tc.outPoint - tc.inPoint) / clampedSpeed
+          return { ...tc, speed: clampedSpeed, duration: newDuration }
+        })
+        return { timelineClips: recalcPositions(updated), isDirty: true }
+      }),
+
+    setTimelineClipColor: (tcId, patch) =>
+      set((s) => ({
+        timelineClips: s.timelineClips.map((tc) =>
+          tc.id === tcId ? { ...tc, color: { ...tc.color, ...patch } } : tc
+        ),
+        isDirty: true,
+      })),
+
+    setTimelineClipTransition: (tcId, edge, type, duration) =>
+      set((s) => ({
+        timelineClips: s.timelineClips.map((tc) => {
+          if (tc.id !== tcId) return tc
+          if (edge === 'in') {
+            return { ...tc, transitionIn: { type, duration } }
+          } else {
+            return { ...tc, transitionOut: { type, duration } }
+          }
+        }),
+        isDirty: true,
+      })),
+
+    setTimelineClipVolume: (tcId, volume) =>
+      set((s) => ({
+        timelineClips: s.timelineClips.map((tc) =>
+          tc.id === tcId ? { ...tc, volume } : tc
+        ),
+        isDirty: true,
+      })),
+
+    selectTimelineClip: (tcId) => set({ selectedTimelineClipId: tcId }),
+
+    setTimelineToolMode: (mode) => set({ timelineToolMode: mode }),
+
+    // ── Music ──────────────────────────────────
+    addMusicTrack: (track) =>
+      set((s) => ({ musicTracks: [...s.musicTracks, track], isDirty: true })),
+
+    updateMusicTrack: (id, patch) =>
+      set((s) => ({
+        musicTracks: s.musicTracks.map((mt) => mt.id === id ? { ...mt, ...patch } : mt),
+        isDirty: true,
+      })),
+
+    removeMusicTrack: (id) =>
+      set((s) => ({
+        musicTracks: s.musicTracks.filter((mt) => mt.id !== id),
+        isDirty: true,
+      })),
 
     // ── Player ─────────────────────────────────
     setCurrentTime: (t) => set({ currentTime: t }),
@@ -525,7 +673,21 @@ export const useProjectStore = create<ProjectState>()(
       set((s) => ({ settings: { ...s.settings, ...patch }, isDirty: true })),
     markDirty: () => set({ isDirty: true }),
     markSaved: (path) => set({ projectPath: path, isDirty: false }),
-    loadProject: (state) => set({ ...state, isDirty: false }),
+    loadProject: (state) => {
+      // Merge defaults for new fields on loaded timeline clips
+      const merged = {
+        ...state,
+        timelineClips: (state.timelineClips ?? []).map((tc) => ({
+          ...DEFAULT_TC_FIELDS,
+          ...tc,
+        })),
+        musicTracks: state.musicTracks ?? [],
+        selectedTimelineClipId: null,
+        timelineToolMode: 'select' as const,
+        isDirty: false,
+      }
+      set(merged)
+    },
     setRecentProjects: (projects) => set({ recentProjects: projects }),
 
     // ── Computed ───────────────────────────────

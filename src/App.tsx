@@ -8,6 +8,7 @@ import InspectorPanel from './components/InspectorPanel'
 import AudioPanel from './components/AudioPanel'
 import Timeline from './components/Timeline'
 import ExportModal from './components/ExportModal'
+import RenderModal from './components/RenderModal'
 import ProjectSettingsModal from './components/ProjectSettingsModal'
 import ImportProgress from './components/ImportProgress'
 import WelcomeScreen from './components/WelcomeScreen'
@@ -75,6 +76,7 @@ export default function App() {
   const [showExport, setShowExport] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showRender, setShowRender] = useState(false)
   const [leftWidth, setLeftWidth] = useState(280)
   const [rightWidth, setRightWidth] = useState(300)
   const [isDraggingLeft, setIsDraggingLeft] = useState(false)
@@ -283,6 +285,12 @@ export default function App() {
         setShowShortcuts(false)
         setShowExport(false)
         setShowSettings(false)
+        setShowRender(false)
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'r') {
+        e.preventDefault()
+        setShowRender(true)
         return
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
@@ -304,6 +312,7 @@ export default function App() {
       api.onMenu('save', handleSaveProject),
       api.onMenu('open-project', () => handleOpenProject()),
       api.onMenu('export', () => setShowExport(true)),
+      api.onMenu('render', () => setShowRender(true)),
       api.onMenu('select-all', () => store.selectAll()),
       api.onMenu('shortcuts', () => setShowShortcuts(true)),
     ]
@@ -393,6 +402,7 @@ export default function App() {
             onImport={handleImportFiles}
             onImportFolder={handleImportFolder}
             onExport={() => setShowExport(true)}
+            onRender={() => setShowRender(true)}
           />
 
           <div className="flex flex-1 overflow-hidden">
@@ -488,6 +498,9 @@ export default function App() {
       )}
       {showShortcuts && (
         <KeyboardShortcutsOverlay onClose={() => setShowShortcuts(false)} />
+      )}
+      {showRender && (
+        <RenderModal onClose={() => setShowRender(false)} />
       )}
     </div>
   )

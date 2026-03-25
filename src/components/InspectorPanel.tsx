@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
-import { Film, Plus, Trash2, Bookmark } from 'lucide-react'
+import { Film, Plus, Trash2 } from 'lucide-react'
 import { useProjectStore } from '../stores/useProjectStore'
 import { formatDuration, formatFileSize, formatBitrate, formatTimecode } from '../utils/timecode'
-import type { ClipRating, ClipFlag, ColorLabel } from '../types'
-import { COLOR_LABEL_HEX } from '../types'
+import type { ClipRating, ClipFlag, ColorLabel, TransitionType } from '../types'
+import { COLOR_LABEL_HEX, DEFAULT_COLOR } from '../types'
 import SubclipPanel from './SubclipPanel'
 
 const FLAG_OPTIONS: { value: ClipFlag; label: string; color: string; active: string }[] = [
@@ -15,7 +15,45 @@ const FLAG_OPTIONS: { value: ClipFlag; label: string; color: string; active: str
 const GROUPS = ['Ceremony', 'Reception', 'Getting Ready', 'First Look', 'Details', 'Speeches', 'Dance', 'Portraits', 'Other']
 const COLOR_LABELS: ColorLabel[] = ['none', 'red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple']
 
-type InspectorTab = 'info' | 'subclips'
+const TRANSITION_TYPES: { value: TransitionType; label: string }[] = [
+  { value: 'none',      label: 'None' },
+  { value: 'fade',      label: 'Fade' },
+  { value: 'dissolve',  label: 'Dissolve' },
+  { value: 'wipeleft',  label: 'Wipe Left' },
+  { value: 'wiperight', label: 'Wipe Right' },
+  { value: 'slideleft', label: 'Slide Left' },
+]
+
+type InspectorTab = 'info' | 'subclips' | 'edit'
+
+// ── Range slider row ──────────────────────────
+function SliderRow({
+  label, value, min, max, step, displayValue, onChange, disabled,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  step: number
+  displayValue: string
+  onChange: (v: number) => void
+  disabled?: boolean
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] text-white/40">{label}</span>
+        <span className="text-[10px] text-white/60 font-mono tabular-nums">{displayValue}</span>
+      </div>
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        disabled={disabled}
+        className="w-full disabled:opacity-40"
+      />
+    </div>
+  )
+}
 
 export default function InspectorPanel() {
   const {
@@ -24,12 +62,20 @@ export default function InspectorPanel() {
     setInPoint, setOutPoint, clearInPoint, clearOutPoint,
     addToTimeline, removeMarker,
     currentTime, settings,
+    selectedTimelineClipId, timelineClips,
+    setTimelineClipSpeed, setTimelineClipColor, setTimelineClipTransition,
+    setTimelineClipVolume,
   } = useProjectStore()
 
   const [tab, setTab] = useState<InspectorTab>('info')
 
   const clip = getSelectedClip()
   const fps  = clip?.info?.fps ?? settings.frameRate
+
+  // Find selected timeline clip
+  const selectedTC = selectedTimelineClipId
+    ? timelineClips.find((tc) => tc.id === selectedTimelineClipId) ?? null
+    : null
 
   if (!clip) {
     return (
@@ -45,18 +91,162 @@ export default function InspectorPanel() {
     <div className="flex flex-col h-full">
       {/* Sub-tabs */}
       <div className="flex border-b border-white/[0.05] flex-shrink-0">
-        {(['info', 'subclips'] as InspectorTab[]).map((t) => (
+        {(['info', 'subclips', 'edit'] as InspectorTab[]).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`flex-1 py-2 text-[11px] font-medium capitalize transition-colors ${
               tab === t ? 'text-white/80 border-b border-[#e4bc72]/60' : 'text-white/35 hover:text-white/55'
             }`}>
-            {t}{t === 'subclips' && clip.subClips.length > 0 ? ` (${clip.subClips.length})` : ''}
+            {t === 'info' ? 'Info' : t === 'subclips'
+              ? `Subclips${clip.subClips.length > 0 ? ` (${clip.subClips.length})` : ''}`
+              : 'Edit'}
           </button>
         ))}
       </div>
 
       {/* Tab: Subclips */}
       {tab === 'subclips' && <SubclipPanel />}
+
+      {/* Tab: Edit */}
+      {tab === 'edit' && (
+        <div className="flex flex-col gap-4 p-3 overflow-y-auto flex-1 pb-6">
+          {!selectedTC ? (
+            <div className="flex items-center justify-center h-24">
+              <p className="text-[12px] text-white/25">Select a clip on the timeline</p>
+            </div>
+          ) : (
+            <>
+              {/* Speed */}
+              <div className="rounded-xl p-3 space-y-3"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <p className="text-[10px] font-medium text-white/40 uppercase tracking-wider">Speed</p>
+                <SliderRow
+                  label="Speed"
+                  value={selectedTC.speed ?? 1}
+                  min={0.25} max={4.0} step={0.05}
+                  displayValue={`${(selectedTC.speed ?? 1).toFixed(2)}×`}
+                  onChange={(v) => setTimelineClipSpeed(selectedTC.id, v)}
+                />
+                {/* Preset buttons */}
+                <div className="flex gap-1.5 flex-wrap">
+                  {[0.25, 0.5, 1, 2].map((s) => (
+                    <button key={s} onClick={() => setTimelineClipSpeed(selectedTC.id, s)}
+                      className={`px-2 py-0.5 rounded text-[10px] transition-colors ${
+                        (selectedTC.speed ?? 1) === s
+                          ? 'bg-[#e4bc72]/20 text-[#e4bc72] border border-[#e4bc72]/30'
+                          : 'bg-white/[0.04] text-white/35 border border-white/[0.06] hover:text-white/60'
+                      }`}>{s}×</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Color Correction */}
+              <div className="rounded-xl p-3 space-y-3"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-medium text-white/40 uppercase tracking-wider">Color</p>
+                  <button
+                    onClick={() => setTimelineClipColor(selectedTC.id, { ...DEFAULT_COLOR })}
+                    className="text-[10px] text-white/30 hover:text-white/60 transition-colors">
+                    Reset
+                  </button>
+                </div>
+                <SliderRow
+                  label="Brightness"
+                  value={selectedTC.color?.brightness ?? 0}
+                  min={-0.5} max={0.5} step={0.01}
+                  displayValue={(selectedTC.color?.brightness ?? 0).toFixed(2)}
+                  onChange={(v) => setTimelineClipColor(selectedTC.id, { brightness: v })}
+                />
+                <SliderRow
+                  label="Contrast"
+                  value={selectedTC.color?.contrast ?? 1}
+                  min={0.5} max={2.0} step={0.01}
+                  displayValue={(selectedTC.color?.contrast ?? 1).toFixed(2)}
+                  onChange={(v) => setTimelineClipColor(selectedTC.id, { contrast: v })}
+                />
+                <SliderRow
+                  label="Saturation"
+                  value={selectedTC.color?.saturation ?? 1}
+                  min={0} max={2.0} step={0.01}
+                  displayValue={(selectedTC.color?.saturation ?? 1).toFixed(2)}
+                  onChange={(v) => setTimelineClipColor(selectedTC.id, { saturation: v })}
+                />
+              </div>
+
+              {/* Transitions */}
+              <div className="rounded-xl p-3 space-y-3"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <p className="text-[10px] font-medium text-white/40 uppercase tracking-wider">Transitions</p>
+
+                {/* Transition In */}
+                <div className="space-y-1.5">
+                  <p className="text-[10px] text-white/35">In</p>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedTC.transitionIn?.type ?? 'none'}
+                      onChange={(e) => setTimelineClipTransition(selectedTC.id, 'in', e.target.value as TransitionType, selectedTC.transitionIn?.duration ?? 0)}
+                      className="flex-1 bg-white/[0.05] border border-white/[0.08] rounded-lg px-2 py-1.5 text-[11px] text-white/70 outline-none focus:border-[#e4bc72]/40"
+                    >
+                      {TRANSITION_TYPES.map((t) => (
+                        <option key={t.value} value={t.value} style={{ background: '#06060c' }}>{t.label}</option>
+                      ))}
+                    </select>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number" min={0} max={3} step={0.1}
+                        value={(selectedTC.transitionIn?.duration ?? 0).toFixed(1)}
+                        onChange={(e) => setTimelineClipTransition(selectedTC.id, 'in', selectedTC.transitionIn?.type ?? 'none', Number(e.target.value))}
+                        className="w-14 bg-white/[0.05] border border-white/[0.08] rounded-lg px-2 py-1.5 text-[11px] text-white/70 outline-none focus:border-[#e4bc72]/40 text-center"
+                        disabled={selectedTC.transitionIn?.type === 'none'}
+                      />
+                      <span className="text-[10px] text-white/30">s</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Transition Out */}
+                <div className="space-y-1.5">
+                  <p className="text-[10px] text-white/35">Out</p>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedTC.transitionOut?.type ?? 'none'}
+                      onChange={(e) => setTimelineClipTransition(selectedTC.id, 'out', e.target.value as TransitionType, selectedTC.transitionOut?.duration ?? 0)}
+                      className="flex-1 bg-white/[0.05] border border-white/[0.08] rounded-lg px-2 py-1.5 text-[11px] text-white/70 outline-none focus:border-[#e4bc72]/40"
+                    >
+                      {TRANSITION_TYPES.map((t) => (
+                        <option key={t.value} value={t.value} style={{ background: '#06060c' }}>{t.label}</option>
+                      ))}
+                    </select>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number" min={0} max={3} step={0.1}
+                        value={(selectedTC.transitionOut?.duration ?? 0).toFixed(1)}
+                        onChange={(e) => setTimelineClipTransition(selectedTC.id, 'out', selectedTC.transitionOut?.type ?? 'none', Number(e.target.value))}
+                        className="w-14 bg-white/[0.05] border border-white/[0.08] rounded-lg px-2 py-1.5 text-[11px] text-white/70 outline-none focus:border-[#e4bc72]/40 text-center"
+                        disabled={selectedTC.transitionOut?.type === 'none'}
+                      />
+                      <span className="text-[10px] text-white/30">s</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Volume */}
+              <div className="rounded-xl p-3 space-y-2"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <p className="text-[10px] font-medium text-white/40 uppercase tracking-wider">Volume</p>
+                <SliderRow
+                  label="Clip Volume"
+                  value={selectedTC.volume ?? 1}
+                  min={0} max={2} step={0.01}
+                  displayValue={`${Math.round((selectedTC.volume ?? 1) * 100)}%`}
+                  onChange={(v) => setTimelineClipVolume(selectedTC.id, v)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Tab: Info */}
       {tab === 'info' && (

@@ -80,6 +80,30 @@ export interface MediaClip {
   reelName: string
 }
 
+// ── Color Correction ──────────────────────────
+export interface ColorCorrection {
+  brightness: number  // -0.5 to 0.5, default 0
+  contrast: number    // 0.5 to 2.0, default 1.0
+  saturation: number  // 0 to 2.0, default 1.0
+}
+
+export const DEFAULT_COLOR: ColorCorrection = { brightness: 0, contrast: 1, saturation: 1 }
+
+// ── Transitions ──────────────────────────────
+export type TransitionType = 'none' | 'fade' | 'dissolve' | 'wipeleft' | 'wiperight' | 'slideleft'
+
+// ── Music Track ───────────────────────────────
+export interface MusicTrack {
+  id: string
+  filePath: string
+  fileName: string
+  startAt: number      // seconds from timeline start
+  volume: number       // 0.0 to 2.0
+  fadeIn: number       // seconds
+  fadeOut: number      // seconds
+  duration: number     // audio file duration in seconds
+}
+
 export interface TimelineClip {
   id: string
   sourceClipId: string
@@ -90,6 +114,11 @@ export interface TimelineClip {
   volume: number
   audioBalance: number
   trackIndex: number
+  // New editing fields
+  speed: number   // 0.25 to 4.0, default 1.0
+  color: ColorCorrection
+  transitionIn: { type: TransitionType; duration: number }
+  transitionOut: { type: TransitionType; duration: number }
 }
 
 export interface ProjectSettings {

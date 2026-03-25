@@ -1,25 +1,32 @@
 import React, { useRef, useCallback, useState, useEffect } from 'react'
-import { Trash2, GripVertical, Film } from 'lucide-react'
+import { Trash2, GripVertical, Film, MousePointer2, Scissors, Music, Volume2, ChevronRight } from 'lucide-react'
 import { useProjectStore } from '../stores/useProjectStore'
 import { formatTimecode, formatDuration } from '../utils/timecode'
+import type { MusicTrack } from '../types'
 
 const MIN_CLIP_PX = 30
 const BASE_PPS = 60
 
 export default function Timeline() {
+  const store = useProjectStore()
   const {
-    timelineClips, clips,
+    timelineClips, clips, musicTracks,
     removeFromTimeline, reorderTimeline, trimTimelineClip, clearTimeline,
     timelineCursorSeconds, setTimelineCursor,
     settings, selectClip,
     addToTimeline,
-  } = useProjectStore()
+    splitTimelineClip,
+    selectedTimelineClipId, selectTimelineClip,
+    timelineToolMode, setTimelineToolMode,
+    addMusicTrack,
+  } = store
 
   const [zoom, setZoom] = useState(1)
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dragOver, setDragOver] = useState<number | null>(null)
   const [trim, setTrim] = useState<{ tcId: string; edge: 'in' | 'out'; startX: number } | null>(null)
-  const [isDragOver, setIsDragOver] = useState(false)  // drag from browser
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [bladeHover, setBladeHover] = useState<{ tcId: string; x: number } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const pps = BASE_PPS * zoom
@@ -29,8 +36,21 @@ export default function Timeline() {
 
   const getClipForTC = (sourceId: string) => clips.find((c) => c.id === sourceId)
 
+  // ── Keyboard shortcuts: V = select, B = blade ─
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (e.key === 'v' || e.key === 'V') setTimelineToolMode('select')
+      if (e.key === 'b' || e.key === 'B') setTimelineToolMode('blade')
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [setTimelineToolMode])
+
   // ── Drag reorder (within timeline) ─────────
   const handleDragStart = (index: number) => (e: React.DragEvent) => {
+    if (timelineToolMode !== 'select') return
     setDragFrom(index)
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/timeline-index', String(index))
@@ -73,7 +93,7 @@ export default function Timeline() {
     if (!rect) return
     const x = e.clientX - rect.left + (containerRef.current?.scrollLeft ?? 0)
     setTimelineCursor(Math.max(0, (x - 24) / pps))
-  }, [pps])
+  }, [pps, setTimelineCursor])
 
   // ── Edge trimming ───────────────────────────
   const handleTrimStart = (tcId: string, edge: 'in' | 'out') => (e: React.MouseEvent) => {
@@ -95,7 +115,54 @@ export default function Timeline() {
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
   }, [trim, pps, trimTimelineClip])
 
-  if (timelineClips.length === 0) {
+  // ── Clip click handler ──────────────────────
+  const handleClipClick = (tcId: string, e: React.MouseEvent, clipEl: HTMLElement) => {
+    e.stopPropagation()
+    if (timelineToolMode === 'blade') {
+      const rect = clipEl.getBoundingClientRect()
+      const scrollLeft = containerRef.current?.scrollLeft ?? 0
+      const tc = timelineClips.find((t) => t.id === tcId)
+      if (!tc) return
+      const clickXRelativeToClip = e.clientX - rect.left
+      const clickTimeInSeconds = tc.timelineStart + clickXRelativeToClip / pps
+      splitTimelineClip(tcId, clickTimeInSeconds)
+    } else {
+      selectTimelineClip(tcId)
+    }
+  }
+
+  // ── Blade hover tracking ────────────────────
+  const handleClipMouseMove = (tcId: string, e: React.MouseEvent) => {
+    if (timelineToolMode !== 'blade') { setBladeHover(null); return }
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setBladeHover({ tcId, x: e.clientX - rect.left })
+  }
+
+  const handleClipMouseLeave = () => {
+    if (timelineToolMode === 'blade') setBladeHover(null)
+  }
+
+  // ── Add music track ─────────────────────────
+  const handleAddMusic = async () => {
+    const api = window.electronAPI
+    const filePath = await api.openAudio()
+    if (!filePath) return
+    const duration = await api.getAudioDuration(filePath)
+    const fileName = filePath.split('/').pop() ?? filePath
+    const track: MusicTrack = {
+      id: `mus_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      filePath,
+      fileName,
+      startAt: 0,
+      volume: 0.8,
+      fadeIn: 0,
+      fadeOut: 0,
+      duration,
+    }
+    addMusicTrack(track)
+  }
+
+  if (timelineClips.length === 0 && musicTracks.length === 0) {
     return (
       <div
         className={`flex items-center justify-center h-full flex-col gap-3 transition-colors ${isDragOver ? 'bg-[#e4bc72]/05' : ''}`}
@@ -124,11 +191,43 @@ export default function Timeline() {
     >
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-white/[0.05] flex-shrink-0">
+        {/* Tool mode buttons */}
+        <div className="flex items-center gap-0.5 mr-1">
+          <button
+            onClick={() => setTimelineToolMode('select')}
+            title="Select (V)"
+            className={`p-1.5 rounded-md transition-colors ${
+              timelineToolMode === 'select'
+                ? 'bg-white/15 text-white/90'
+                : 'text-white/35 hover:text-white/60 hover:bg-white/[0.05]'
+            }`}>
+            <MousePointer2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setTimelineToolMode('blade')}
+            title="Blade (B)"
+            className={`p-1.5 rounded-md transition-colors ${
+              timelineToolMode === 'blade'
+                ? 'bg-[#e4bc72]/20 text-[#e4bc72]'
+                : 'text-white/35 hover:text-white/60 hover:bg-white/[0.05]'
+            }`}>
+            <Scissors className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        <div className="w-px h-4 bg-white/10" />
+
         <span className="text-[11px] text-white/40">Timeline</span>
         <span className="text-[11px] text-white/25">
           {timelineClips.length} clip{timelineClips.length !== 1 ? 's' : ''} · {formatDuration(totalDuration)}
         </span>
         <div className="flex-1" />
+
+        {/* + Music */}
+        <button onClick={handleAddMusic}
+          className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-[#e4bc72]/50 hover:text-[#e4bc72] hover:bg-[#e4bc72]/10 transition-colors">
+          <Music className="w-3 h-3" />+ Music
+        </button>
 
         {/* Zoom */}
         <div className="flex items-center gap-1.5">
@@ -182,25 +281,38 @@ export default function Timeline() {
                 const src = getClipForTC(tc.sourceClipId)
                 const clipW = Math.max(MIN_CLIP_PX, tc.duration * pps)
                 const flagColor = src?.flag === 'pick' ? '#34d399' : src?.flag === 'reject' ? '#f87171' : src?.flag === 'review' ? '#fbbf24' : '#3a3a5c'
+                const isSelected = selectedTimelineClipId === tc.id
+                const isBladeTarget = bladeHover?.tcId === tc.id
 
                 return (
                   <div key={tc.id}
-                    className={`absolute inset-y-1 rounded-lg overflow-hidden group/tc cursor-grab active:cursor-grabbing transition-opacity ${
-                      dragFrom === index ? 'opacity-40' : dragOver === index ? 'ring-2 ring-[#e4bc72]' : ''
+                    className={`absolute inset-y-1 rounded-lg overflow-hidden group/tc transition-opacity ${
+                      timelineToolMode === 'blade' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
+                    } ${dragFrom === index ? 'opacity-40' : dragOver === index ? 'ring-2 ring-[#e4bc72]' : ''} ${
+                      isSelected ? 'ring-1 ring-[#e4bc72]/30' : ''
                     }`}
                     style={{
                       left: tc.timelineStart * pps,
                       width: clipW,
                       background: 'rgba(255,255,255,0.07)',
-                      border: `1px solid rgba(255,255,255,0.1)`,
-                      borderLeft: `3px solid ${flagColor}`,
+                      border: isSelected
+                        ? '1px solid rgba(228,188,114,0.5)'
+                        : `1px solid rgba(255,255,255,0.1)`,
+                      borderLeft: isSelected
+                        ? `3px solid #e4bc72`
+                        : `3px solid ${flagColor}`,
                     }}
-                    draggable
+                    draggable={timelineToolMode === 'select'}
                     onDragStart={handleDragStart(index)}
                     onDragOver={handleDragOver(index)}
                     onDrop={handleDrop(index)}
                     onDragEnd={handleDragEnd}
-                    onDoubleClick={() => src && selectClip(src.id)}
+                    onDoubleClick={() => {
+                      if (timelineToolMode === 'select' && src) selectClip(src.id)
+                    }}
+                    onClick={(e) => handleClipClick(tc.id, e, e.currentTarget)}
+                    onMouseMove={(e) => handleClipMouseMove(tc.id, e)}
+                    onMouseLeave={handleClipMouseLeave}
                   >
                     {/* Thumbnail strip */}
                     {src?.thumbnail && (
@@ -216,6 +328,15 @@ export default function Timeline() {
                         <p className="text-[10px] font-medium text-white/80 truncate">{src?.fileName ?? '—'}</p>
                         <p className="text-[9px] text-white/40 truncate">{formatDuration(tc.duration)}</p>
                       </div>
+
+                      {/* Speed badge */}
+                      {tc.speed !== 1 && (
+                        <span className="text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0"
+                          style={{ background: 'rgba(228,188,114,0.2)', color: '#e4bc72' }}>
+                          {tc.speed}×
+                        </span>
+                      )}
+
                       <button
                         onClick={(e) => { e.stopPropagation(); removeFromTimeline(tc.id) }}
                         className="p-0.5 opacity-0 group-hover/tc:opacity-100 text-white/40 hover:text-red-400 hover:bg-red-400/10 rounded transition-all flex-shrink-0">
@@ -240,6 +361,19 @@ export default function Timeline() {
                     >
                       <div className="w-0.5 h-3/4 bg-white/60 rounded-full" />
                     </div>
+
+                    {/* Transition out indicator */}
+                    {tc.transitionOut?.type && tc.transitionOut.type !== 'none' && tc.transitionOut.duration > 0 && (
+                      <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none z-20">
+                        <ChevronRight className="w-3 h-3 text-[#e4bc72]/60" />
+                      </div>
+                    )}
+
+                    {/* Blade hover line */}
+                    {timelineToolMode === 'blade' && isBladeTarget && bladeHover && (
+                      <div className="absolute top-0 bottom-0 w-px pointer-events-none z-30"
+                        style={{ left: bladeHover.x, background: '#e4bc72', boxShadow: '0 0 4px #e4bc72' }} />
+                    )}
                   </div>
                 )
               })}
@@ -278,6 +412,44 @@ export default function Timeline() {
               })}
             </div>
           </div>
+
+          {/* Music track */}
+          <div className="relative mt-0.5" style={{ height: 32 }}>
+            <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[9px] text-[#e4bc72]/30 z-10">M</span>
+            <div className="absolute inset-y-0" style={{ left: 20, right: 0 }}>
+              {musicTracks.map((mt) => {
+                const w = Math.max(MIN_CLIP_PX, mt.duration * pps)
+                return (
+                  <div key={`m_${mt.id}`}
+                    className="absolute inset-y-1 rounded overflow-hidden group/mt cursor-pointer"
+                    style={{
+                      left: mt.startAt * pps,
+                      width: w,
+                      background: 'rgba(228,188,114,0.12)',
+                      border: '1px solid rgba(228,188,114,0.25)',
+                    }}
+                    onDoubleClick={() => {/* future: open music editor */}}
+                  >
+                    <div className="flex items-center h-full px-1.5 gap-1 overflow-hidden">
+                      <Volume2 className="w-2.5 h-2.5 text-[#e4bc72]/60 flex-shrink-0" />
+                      <p className="text-[9px] text-[#e4bc72]/70 truncate flex-1">{mt.fileName}</p>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); store.removeMusicTrack(mt.id) }}
+                        className="p-0.5 opacity-0 group-hover/mt:opacity-100 text-[#e4bc72]/40 hover:text-red-400 hover:bg-red-400/10 rounded transition-all flex-shrink-0">
+                        <Trash2 className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+              {musicTracks.length === 0 && (
+                <div className="absolute inset-y-1 inset-x-0 flex items-center px-2">
+                  <p className="text-[9px] text-white/15">No music — click + Music to add</p>
+                </div>
+              )}
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
