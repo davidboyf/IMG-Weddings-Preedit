@@ -467,7 +467,7 @@ ipcMain.handle('ffmpeg:stabilize', async (_e, payload: {
       const vf = [
         transformFilter,
         'unsharp=5:5:0.8:3:3:0.4',
-        'deflicker=size=5:mode=pm',
+        'deflicker=size=5:mode=median',  // median = best for variable wedding lighting
       ].join(',')
 
       const pass2Args = [

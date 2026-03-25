@@ -286,7 +286,7 @@ export default function StabilizationPanel() {
 
         {/* Info note */}
         <p className="text-[9px] text-white/20 leading-relaxed">
-          Two-pass FFmpeg vidstab with adaptive zoom · Bicubic interpolation · Deflicker + unsharp post-processing · Original file unchanged
+          Two-pass FFmpeg vidstab · shakiness=10, accuracy=15 · optzoom=2 adaptive zoom · Bicubic warp · Unsharp + median deflicker · Original file preserved · For CMOS rolling shutter (jello), use Gyroflow or DaVinci Resolve
         </p>
 
         {/* Run button */}
